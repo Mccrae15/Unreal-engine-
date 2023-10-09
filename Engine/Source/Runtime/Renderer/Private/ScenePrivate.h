@@ -3018,6 +3018,10 @@ public:
 
 	float DynamicIndirectShadowsSelfShadowingIntensity;
 
+	// BEGIN META SECTION - XR Soft Occlusions
+	bool bEnableXRPassthroughSoftOcclusions = false;
+	// END META SECTION - XR Soft Occlusions
+
 	const FReadOnlyCVARCache& ReadOnlyCVARCache;
 
 	FSpanAllocator PersistentPrimitiveIdAllocator;
@@ -3138,6 +3142,9 @@ public:
 	virtual FRHIUniformBuffer* GetSpeedTreeUniformBuffer(const FVertexFactory* VertexFactory) const override;
 	virtual void DumpUnbuiltLightInteractions( FOutputDevice& Ar ) const override;
 	virtual void UpdateParameterCollections(const TArray<FMaterialParameterCollectionInstanceResource*>& InParameterCollections) override;
+	// BEGIN META SECTION - XR Soft Occlusions
+	virtual void SetEnableXRPassthroughSoftOcclusions(bool bEnable) override;
+	// END META SECTION - XR Soft Occlusions
 
 	virtual bool RequestGPUSceneUpdate(FPrimitiveSceneInfo& PrimitiveSceneInfo, EPrimitiveDirtyState PrimitiveDirtyState) override;
 

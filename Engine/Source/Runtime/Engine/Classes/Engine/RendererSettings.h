@@ -837,6 +837,14 @@ class ENGINE_API URendererSettings : public UDeveloperSettings
 		ConfigRestartRequired = true))
 		uint32 bMobileSupportSpaceWarp : 1;
 
+	// BEGIN META SECTION - XR Soft Occlusions
+	UPROPERTY(config, EditAnywhere, Category = VR, meta = (
+		ConsoleVariable = "r.Mobile.XRSoftOcclusionsPermutation", DisplayName = "Support Mobile XR Soft Occlusions",
+		ToolTip = "Enable this to compile the shader variations needed to enable mixed reality passthrough soft occlusions at runtime.",
+		ConfigRestartRequired = true))
+		uint32 bMobileSupportsXRSoftOcclusions : 1;
+	// END META SECTION - XR Soft Occlusions
+
 	UPROPERTY(config, EditAnywhere, Category = Experimental, meta = (
 		ConsoleVariable="r.MeshStreaming",DisplayName="Mesh Streaming",
 		ToolTip="When enabled mesh will stream in based on what is visible on screen.",

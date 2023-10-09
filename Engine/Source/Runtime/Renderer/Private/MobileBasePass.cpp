@@ -13,6 +13,9 @@
 #include "PrimitiveSceneInfo.h"
 #include "MeshPassProcessor.inl"
 #include "Engine/TextureCube.h"
+// BEGIN META SECTION - XR Soft Occlusions
+#include "StereoRenderTargetManager.h"
+// END META SECTION - XR Soft Occlusions
 
 uint8 GetMobileShadingModelStencilValue(FMaterialShadingModelField ShadingModel)
 {
@@ -47,7 +50,9 @@ bool MobileUsesNoLightMapPermutation(const FMeshMaterialShaderPermutationParamet
 	return true;
 }
 
-template <ELightMapPolicyType Policy, bool bEnableLocalLights>
+// BEGIN META SECTION - XR Soft Occlusions
+template <ELightMapPolicyType Policy, bool bEnableLocalLights, bool bEnableXRSoftOcclusions>
+// END META SECTION - XR Soft Occlusions
 bool GetUniformMobileBasePassShaders(
 	const FMaterial& Material, 
 	FVertexFactoryType* VertexFactoryType, 
@@ -66,11 +71,11 @@ bool GetUniformMobileBasePassShaders(
 
 		if (bEnableSkyLight)
 		{
-			ShaderTypes.AddShaderType<TMobileBasePassPS<TUniformLightMapPolicy<Policy>, HDR_LINEAR_64, true, bEnableLocalLights>>();
+			ShaderTypes.AddShaderType<TMobileBasePassPS<TUniformLightMapPolicy<Policy>, HDR_LINEAR_64, true, bEnableLocalLights, bEnableXRSoftOcclusions>>();
 		}
 		else
 		{
-			ShaderTypes.AddShaderType<TMobileBasePassPS<TUniformLightMapPolicy<Policy>, HDR_LINEAR_64, false, bEnableLocalLights>>();
+			ShaderTypes.AddShaderType<TMobileBasePassPS<TUniformLightMapPolicy<Policy>, HDR_LINEAR_64, false, bEnableLocalLights, bEnableXRSoftOcclusions>>();
 		}	
 	}
 	else
@@ -79,11 +84,11 @@ bool GetUniformMobileBasePassShaders(
 
 		if (bEnableSkyLight)
 		{
-			ShaderTypes.AddShaderType<TMobileBasePassPS<TUniformLightMapPolicy<Policy>, LDR_GAMMA_32, true, bEnableLocalLights>>();
+			ShaderTypes.AddShaderType<TMobileBasePassPS<TUniformLightMapPolicy<Policy>, LDR_GAMMA_32, true, bEnableLocalLights, bEnableXRSoftOcclusions>>();
 		}
 		else
 		{
-			ShaderTypes.AddShaderType<TMobileBasePassPS<TUniformLightMapPolicy<Policy>, LDR_GAMMA_32, false, bEnableLocalLights>>();
+			ShaderTypes.AddShaderType<TMobileBasePassPS<TUniformLightMapPolicy<Policy>, LDR_GAMMA_32, false, bEnableLocalLights, bEnableXRSoftOcclusions>>();
 		}			
 	}
 
@@ -98,7 +103,9 @@ bool GetUniformMobileBasePassShaders(
 	return true;
 }
 
-template <bool bEnableLocalLights>
+// BEGIN META SECTION - XR Soft Occlusions
+template <bool bEnableLocalLights, bool bEnableXRSoftOcclusions>
+// END META SECTION - XR Soft Occlusions
 bool GetMobileBasePassShaders(
 	ELightMapPolicyType LightMapPolicyType, 
 	const FMaterial& Material, 
@@ -111,34 +118,74 @@ bool GetMobileBasePassShaders(
 	switch (LightMapPolicyType)
 	{
 	case LMP_NO_LIGHTMAP:
-		return GetUniformMobileBasePassShaders<LMP_NO_LIGHTMAP, bEnableLocalLights>(Material, VertexFactoryType, bEnableSkyLight, VertexShader, PixelShader);
+		return GetUniformMobileBasePassShaders<LMP_NO_LIGHTMAP, bEnableLocalLights, bEnableXRSoftOcclusions>(Material, VertexFactoryType, bEnableSkyLight, VertexShader, PixelShader);
 	case LMP_LQ_LIGHTMAP:
-		return GetUniformMobileBasePassShaders<LMP_LQ_LIGHTMAP, bEnableLocalLights>(Material, VertexFactoryType, bEnableSkyLight, VertexShader, PixelShader);
+		return GetUniformMobileBasePassShaders<LMP_LQ_LIGHTMAP, bEnableLocalLights, bEnableXRSoftOcclusions>(Material, VertexFactoryType, bEnableSkyLight, VertexShader, PixelShader);
 	case LMP_MOBILE_DISTANCE_FIELD_SHADOWS_AND_LQ_LIGHTMAP:
-		return GetUniformMobileBasePassShaders<LMP_MOBILE_DISTANCE_FIELD_SHADOWS_AND_LQ_LIGHTMAP, bEnableLocalLights>(Material, VertexFactoryType, bEnableSkyLight, VertexShader, PixelShader);
+		return GetUniformMobileBasePassShaders<LMP_MOBILE_DISTANCE_FIELD_SHADOWS_AND_LQ_LIGHTMAP, bEnableLocalLights, bEnableXRSoftOcclusions>(Material, VertexFactoryType, bEnableSkyLight, VertexShader, PixelShader);
 	case LMP_MOBILE_DISTANCE_FIELD_SHADOWS_LIGHTMAP_AND_CSM:
-		return GetUniformMobileBasePassShaders<LMP_MOBILE_DISTANCE_FIELD_SHADOWS_LIGHTMAP_AND_CSM, bEnableLocalLights>(Material, VertexFactoryType, bEnableSkyLight, VertexShader, PixelShader);
+		return GetUniformMobileBasePassShaders<LMP_MOBILE_DISTANCE_FIELD_SHADOWS_LIGHTMAP_AND_CSM, bEnableLocalLights, bEnableXRSoftOcclusions>(Material, VertexFactoryType, bEnableSkyLight, VertexShader, PixelShader);
 	case LMP_MOBILE_DIRECTIONAL_LIGHT_CSM_AND_LIGHTMAP:
-		return GetUniformMobileBasePassShaders<LMP_MOBILE_DIRECTIONAL_LIGHT_CSM_AND_LIGHTMAP, bEnableLocalLights>(Material, VertexFactoryType, bEnableSkyLight, VertexShader, PixelShader);
+		return GetUniformMobileBasePassShaders<LMP_MOBILE_DIRECTIONAL_LIGHT_CSM_AND_LIGHTMAP, bEnableLocalLights, bEnableXRSoftOcclusions>(Material, VertexFactoryType, bEnableSkyLight, VertexShader, PixelShader);
 	case LMP_MOBILE_DIRECTIONAL_LIGHT_AND_SH_INDIRECT:
-		return GetUniformMobileBasePassShaders<LMP_MOBILE_DIRECTIONAL_LIGHT_AND_SH_INDIRECT, bEnableLocalLights>(Material, VertexFactoryType, bEnableSkyLight, VertexShader, PixelShader);
+		return GetUniformMobileBasePassShaders<LMP_MOBILE_DIRECTIONAL_LIGHT_AND_SH_INDIRECT, bEnableLocalLights, bEnableXRSoftOcclusions>(Material, VertexFactoryType, bEnableSkyLight, VertexShader, PixelShader);
 	case LMP_MOBILE_DIRECTIONAL_LIGHT_CSM_AND_SH_INDIRECT:
-		return GetUniformMobileBasePassShaders<LMP_MOBILE_DIRECTIONAL_LIGHT_CSM_AND_SH_INDIRECT, bEnableLocalLights>(Material, VertexFactoryType, bEnableSkyLight, VertexShader, PixelShader);
+		return GetUniformMobileBasePassShaders<LMP_MOBILE_DIRECTIONAL_LIGHT_CSM_AND_SH_INDIRECT, bEnableLocalLights, bEnableXRSoftOcclusions>(Material, VertexFactoryType, bEnableSkyLight, VertexShader, PixelShader);
 	case LMP_MOBILE_MOVABLE_DIRECTIONAL_LIGHT_WITH_LIGHTMAP:
-		return GetUniformMobileBasePassShaders<LMP_MOBILE_MOVABLE_DIRECTIONAL_LIGHT_WITH_LIGHTMAP, bEnableLocalLights>(Material, VertexFactoryType, bEnableSkyLight, VertexShader, PixelShader);
+		return GetUniformMobileBasePassShaders<LMP_MOBILE_MOVABLE_DIRECTIONAL_LIGHT_WITH_LIGHTMAP, bEnableLocalLights, bEnableXRSoftOcclusions>(Material, VertexFactoryType, bEnableSkyLight, VertexShader, PixelShader);
 	case LMP_MOBILE_MOVABLE_DIRECTIONAL_LIGHT_CSM_WITH_LIGHTMAP:
-		return GetUniformMobileBasePassShaders<LMP_MOBILE_MOVABLE_DIRECTIONAL_LIGHT_CSM_WITH_LIGHTMAP, bEnableLocalLights>(Material, VertexFactoryType, bEnableSkyLight, VertexShader, PixelShader);
+		return GetUniformMobileBasePassShaders<LMP_MOBILE_MOVABLE_DIRECTIONAL_LIGHT_CSM_WITH_LIGHTMAP, bEnableLocalLights, bEnableXRSoftOcclusions>(Material, VertexFactoryType, bEnableSkyLight, VertexShader, PixelShader);
 	case LMP_MOBILE_DIRECTIONAL_LIGHT_CSM:
-		return GetUniformMobileBasePassShaders<LMP_MOBILE_DIRECTIONAL_LIGHT_CSM, bEnableLocalLights>(Material, VertexFactoryType, bEnableSkyLight, VertexShader, PixelShader);
+		return GetUniformMobileBasePassShaders<LMP_MOBILE_DIRECTIONAL_LIGHT_CSM, bEnableLocalLights, bEnableXRSoftOcclusions>(Material, VertexFactoryType, bEnableSkyLight, VertexShader, PixelShader);
 	default:										
 		check(false);
 		return true;
 	}
 }
 
+// BEGIN META SECTION - XR Soft Occlusions
+template <bool bEnableLocalLights>
+bool GetMobileBasePassShaders(
+	ELightMapPolicyType LightMapPolicyType,
+	bool bEnableXRSoftOcclusions,
+	const FMaterial& Material,
+	FVertexFactoryType* VertexFactoryType,
+	bool bEnableSkyLight,
+	TShaderRef<TMobileBasePassVSPolicyParamType<FUniformLightMapPolicy>>& VertexShader,
+	TShaderRef<TMobileBasePassPSPolicyParamType<FUniformLightMapPolicy>>& PixelShader
+)
+{
+	if (bEnableXRSoftOcclusions)
+	{
+		return GetMobileBasePassShaders<bEnableLocalLights, true>(
+			LightMapPolicyType,
+			Material,
+			VertexFactoryType,
+			bEnableSkyLight,
+			VertexShader,
+			PixelShader
+			);
+	}
+	else
+	{
+		return GetMobileBasePassShaders<bEnableLocalLights, false>(
+			LightMapPolicyType,
+			Material,
+			VertexFactoryType,
+			bEnableSkyLight,
+			VertexShader,
+			PixelShader
+			);
+	}
+}
+// END META SECTION - XR Soft Occlusions
+
 bool MobileBasePass::GetShaders(
 	ELightMapPolicyType LightMapPolicyType,
 	bool bEnableLocalLights,
+	// BEGIN META SECTION - XR Soft Occlusions
+	bool bEnableXRSoftOcclusions,
+	// END META SECTION - XR Soft Occlusions
 	const FMaterial& MaterialResource,
 	FVertexFactoryType* VertexFactoryType,
 	bool bEnableSkyLight, 
@@ -155,6 +202,9 @@ bool MobileBasePass::GetShaders(
 	{
 		return GetMobileBasePassShaders<true>(
 			LightMapPolicyType,
+			// BEGIN META SECTION - XR Soft Occlusions
+			bEnableXRSoftOcclusions,
+			// END META SECTION - XR Soft Occlusions
 			MaterialResource,
 			VertexFactoryType,
 			bEnableSkyLight,
@@ -166,6 +216,9 @@ bool MobileBasePass::GetShaders(
 	{
 		return GetMobileBasePassShaders<false>(
 			LightMapPolicyType,
+			// BEGIN META SECTION - XR Soft Occlusions
+			bEnableXRSoftOcclusions,
+			// END META SECTION - XR Soft Occlusions
 			MaterialResource,
 			VertexFactoryType,
 			bEnableSkyLight,
@@ -730,9 +783,16 @@ bool FMobileBasePassMeshProcessor::Process(
 		}
 	}
 
+	// BEGIN META SECTION - XR Soft Occlusions
+	bool bEnableXRSoftOcclusions = Scene && Scene->bEnableXRPassthroughSoftOcclusions && MaterialResource.IsXRSoftOcclusionsEnabled();
+	// END META SECTION - XR Soft Occlusions
+
 	if (!MobileBasePass::GetShaders(
 		LightMapPolicyType,
 		bEnableLocalLights,
+		// BEGIN META SECTION - XR Soft Occlusions
+		bEnableXRSoftOcclusions,
+		// END META SECTION - XR Soft Occlusions
 		MaterialResource,
 		MeshBatch.VertexFactory->GetType(),
 		bEnableSkyLight,

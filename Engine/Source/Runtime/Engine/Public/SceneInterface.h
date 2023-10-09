@@ -485,6 +485,10 @@ public:
 	virtual void UpdateLumenSceneCardTransform(class ULumenSceneCardComponent* LumenSceneCardComponent) {};
 	virtual void RemoveLumenSceneCard(class ULumenSceneCardComponent* LumenSceneCardComponent) {};
 
+	// BEGIN META SECTION - XR Soft Occlusions
+	virtual void SetEnableXRPassthroughSoftOcclusions(bool bEnable) {};
+	// END META SECTION - XR Soft Occlusions
+
 	/**
 	 * Release this scene and remove it from the rendering thread
 	 */

@@ -155,6 +155,24 @@ static bool FindStereoMotionVectorTexture(FTexture2DRHIRef& MVTexture, FIntPoint
 	return false;
 }
 
+// BEGIN META SECTION - XR Soft Occlusions
+static bool FindEnvironmentDepthTexture_RenderThread(FTextureRHIRef& OutTexture, FVector2f& OutDepthFactors, FMatrix44f OutScreenToDepthMatrices[2])
+{
+	if (IStereoRenderTargetManager* StereoRenderTargetManager = FindStereoRenderTargetManager())
+	{
+		if (StereoRenderTargetManager->FindEnvironmentDepthTexture_RenderThread(OutTexture, OutDepthFactors, OutScreenToDepthMatrices))
+		{
+			return true;
+		}
+	}
+	OutTexture = nullptr;
+	OutDepthFactors = FVector2f(-1.0f, 1.0f);
+	OutScreenToDepthMatrices[0] = FMatrix44f::Identity;
+	OutScreenToDepthMatrices[1] = FMatrix44f::Identity;
+	return false;
+}
+// END META SECTION - XR Soft Occlusions
+
 /** Helper class used to track and compute a suitable scene texture extent for the renderer based on history / global configuration. */
 class FSceneTextureExtentState
 {
@@ -631,6 +649,19 @@ void FSceneTextures::InitializeViewFamily(FRDGBuilder& GraphBuilder, FViewFamily
 			SceneTextures.MotionVectorDepth = RegisterExternalTexture(GraphBuilder, StereoMVDepthRHI, TEXT("MotionVectorDepth"));
 		}
 	}
+
+	// BEGIN META SECTION - XR Soft Occlusions
+	// Environment Depth
+	if (Config.ShadingPath == EShadingPath::Mobile)
+	{
+		FTextureRHIRef EnvironmentDepthRHI;
+		if (FindEnvironmentDepthTexture_RenderThread(EnvironmentDepthRHI, SceneTextures.DepthFactors, SceneTextures.ScreenToDepthMatrices))
+		{
+			auto &desc = EnvironmentDepthRHI->GetDesc();
+			SceneTextures.EnvironmentDepthTexture = RegisterExternalTexture(GraphBuilder, EnvironmentDepthRHI, TEXT("EnvironmentDepth"));
+		}
+	}
+	// END META SECTION - XR Soft Occlusions
 
 #if WITH_EDITOR
 	{

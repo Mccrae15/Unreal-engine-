@@ -1348,6 +1348,28 @@ void FMobileSceneRenderer::RenderForward(FRDGBuilder& GraphBuilder, FRDGTextureR
 
 		FMobileBasePassTextures MobileBasePassTextures{};
 		MobileBasePassTextures.ScreenSpaceAO = bRequiresAmbientOcclusionPass ? SceneTextures.ScreenSpaceAO : SystemTextures.White;
+		// BEGIN META SECTION - XR Soft Occlusions
+		if (View.bIsSceneCapture || View.bIsReflectionCapture || View.bIsPlanarReflection)
+		{
+			// If this is a scene capture then the environment depth texture won't align with the camera,
+			// use dummy parameters instead which represent infinite environment depth.
+			MobileBasePassTextures.EnvironmentDepthTexture = SystemTextures.White;
+			MobileBasePassTextures.DepthFactors = FVector2f(-1.0f, 1.0f);
+			for (int i = 0; i < 2; ++i)
+			{
+				MobileBasePassTextures.ScreenToDepthMatrices[i] = FMatrix44f::Identity;
+			}
+		}
+		else
+		{
+			MobileBasePassTextures.EnvironmentDepthTexture = SceneTextures.EnvironmentDepthTexture;
+			MobileBasePassTextures.DepthFactors = SceneTextures.DepthFactors;
+			for (int i = 0; i < 2; ++i)
+			{
+				MobileBasePassTextures.ScreenToDepthMatrices[i] = SceneTextures.ScreenToDepthMatrices[i];
+			}
+		}
+		// END META SECTION - XR Soft Occlusions
 
 		EMobileSceneTextureSetupMode SetupMode = EMobileSceneTextureSetupMode::CustomDepth;
 		FMobileRenderPassParameters* PassParameters = GraphBuilder.AllocParameters<FMobileRenderPassParameters>();
@@ -1728,6 +1750,28 @@ void FMobileSceneRenderer::RenderDeferred(FRDGBuilder& GraphBuilder, const FSort
 
 		FMobileBasePassTextures MobileBasePassTextures{};
 		MobileBasePassTextures.ScreenSpaceAO = bRequiresAmbientOcclusionPass ? SceneTextures.ScreenSpaceAO : SystemTextures.White;
+		// BEGIN META SECTION - XR Soft Occlusions
+		if (View.bIsSceneCapture || View.bIsReflectionCapture || View.bIsPlanarReflection)
+		{
+			// If this is a scene capture then the environment depth texture won't align with the camera,
+			// use dummy parameters instead which represent infinite environment depth.
+			MobileBasePassTextures.EnvironmentDepthTexture = SystemTextures.White;
+			MobileBasePassTextures.DepthFactors = FVector2f(-1.0f, 1.0f);
+			for (int i = 0; i < 2; ++i)
+			{
+				MobileBasePassTextures.ScreenToDepthMatrices[i] = FMatrix44f::Identity;
+			}
+		}
+		else
+		{
+			MobileBasePassTextures.EnvironmentDepthTexture = SceneTextures.EnvironmentDepthTexture;
+			MobileBasePassTextures.DepthFactors = SceneTextures.DepthFactors;
+			for (int i = 0; i < 2; ++i)
+			{
+				MobileBasePassTextures.ScreenToDepthMatrices[i] = SceneTextures.ScreenToDepthMatrices[i];
+			}
+		}
+		// END META SECTION - XR Soft Occlusions
 
 		EMobileSceneTextureSetupMode SetupMode = EMobileSceneTextureSetupMode::CustomDepth;
 		auto* PassParameters = GraphBuilder.AllocParameters<FMobileRenderPassParameters>();

@@ -2678,6 +2678,15 @@ static TAutoConsoleVariable<int32> CVarMobileSkyLightPermutation(
 		 "2: Generate only skylight permutations"),
 	ECVF_RenderThreadSafe | ECVF_ReadOnly);
 
+// BEGIN META SECTION - XR Soft Occlusions
+static TAutoConsoleVariable<int32> CVarMobileXRSoftOcclusionsPermutation(
+	TEXT("r.Mobile.XRSoftOcclusionsPermutation"),
+	0,
+	TEXT("0: Don't generate soft occlusions permutations. (default)\n"
+		 "1: Generate soft occlusions permutation."),
+	ECVF_RenderThreadSafe | ECVF_ReadOnly);
+// END META SECTION - XR Soft Occlusions
+
 static TAutoConsoleVariable<int32> CVarMobileFloatPrecisionMode(
 	TEXT("r.Mobile.FloatPrecisionMode"),
 	0,

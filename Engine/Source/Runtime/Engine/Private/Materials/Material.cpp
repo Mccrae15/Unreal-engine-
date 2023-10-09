@@ -989,6 +989,9 @@ UMaterial::UMaterial(const FObjectInitializer& ObjectInitializer)
 	BlendableOutputAlpha = false;
 	bIsBlendable = true;
 	bEnableStencilTest = false;
+	// BEGIN META SECTION - XR Soft Occlusions
+	bXRSoftOcclusions = true;
+	// END META SECTION - XR Soft Occlusions
 	bUsedWithVolumetricCloud = false;
 
 	bUseEmissiveForDynamicAreaLighting = false;

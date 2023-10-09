@@ -93,6 +93,13 @@ struct RENDERER_API FSceneTextures : public FMinimalSceneTextures
 	FRDGTextureRef MotionVector{};
 	FRDGTextureRef MotionVectorDepth{};
 
+	// BEGIN META SECTION - XR Soft Occlusions
+	// Environment Depth
+	FRDGTextureRef EnvironmentDepthTexture{};
+	FVector2f DepthFactors{ -1.0f, 1.0f };
+	FMatrix44f ScreenToDepthMatrices[2]{};
+	// END META SECTION - XR Soft Occlusions
+
 	// Textures used to composite editor primitives. Also used by the base pass when in wireframe mode.
 #if WITH_EDITOR
 	FRDGTextureRef EditorPrimitiveColor{};

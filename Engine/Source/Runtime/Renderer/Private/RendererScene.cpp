@@ -1507,6 +1507,33 @@ void FScene::UpdateParameterCollections(const TArray<FMaterialParameterCollectio
 	});
 }
 
+// BEGIN META SECTION - XR Soft Occlusions
+void FScene::SetEnableXRPassthroughSoftOcclusions(bool bEnable)
+{
+	if (bEnable)
+	{
+		static auto* MobileXRSoftOcclusionsPermutationCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.XRSoftOcclusionsPermutation"));
+		const int32 MobileSoftOcclusionsPermutation = MobileXRSoftOcclusionsPermutationCVar->GetValueOnAnyThread();
+		if (MobileSoftOcclusionsPermutation == 0)
+		{
+			ensureMsgf(false, TEXT("In order to enable soft occlusions 'Support Mobile Soft Occlusions' must be enabled in the project settings."));
+			return;
+		}
+	}
+
+	FScene* Scene = this;
+	ENQUEUE_RENDER_COMMAND(SetEnableXRPassthroughSoftOcclusions)(
+		[Scene, bEnable](FRHICommandListImmediate& RHICmdList)
+		{
+			if (bEnable != Scene->bEnableXRPassthroughSoftOcclusions)
+			{
+				Scene->bEnableXRPassthroughSoftOcclusions = bEnable;
+				Scene->UpdateStaticDrawLists_RenderThread(RHICmdList);
+			}
+		});
+}
+// END META SECTION - XR Soft Occlusions
+
 bool FScene::RequestGPUSceneUpdate(FPrimitiveSceneInfo& PrimitiveSceneInfo, EPrimitiveDirtyState PrimitiveDirtyState)
 {
 	return PrimitiveSceneInfo.RequestGPUSceneUpdate(PrimitiveDirtyState);

@@ -1,8 +1,0 @@
-Binaries/
-Build/
-DerivedDataCache/
-Intermediate/
-**/Plugins/OculusXR
-Saved/
-.vs/
-*.sln

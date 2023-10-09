@@ -129,6 +129,9 @@ bool FEditorPrimitivesBasePassMeshProcessor::ProcessMobileShadingPath(const FMes
 
 	const FVertexFactory* VertexFactory = MeshBatch.VertexFactory;
 	const bool bEnableLocalLights = false;
+	// BEGIN META SECTION - XR Soft Occlusions
+	const bool bEnableXRSoftOcclusions = false;
+	// END META SECTION - XR Soft Occlusions
 	const bool bEnableSkyLight = false;
 
 	TMeshProcessorShaders<
@@ -137,6 +140,9 @@ bool FEditorPrimitivesBasePassMeshProcessor::ProcessMobileShadingPath(const FMes
 	if (!MobileBasePass::GetShaders(
 		NoLightmapPolicy.GetIndirectPolicy(),
 		bEnableLocalLights,
+		// BEGIN META SECTION - XR Soft Occlusions
+		bEnableXRSoftOcclusions,
+		// END META SECTION - XR Soft Occlusions
 		Material,
 		VertexFactory->GetType(),
 		bEnableSkyLight,

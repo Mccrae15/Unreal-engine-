@@ -2007,6 +2007,13 @@ bool FMaterialResource::HasRenderTracePhysicalMaterialOutputs() const
 	return Material->GetRenderTracePhysicalMaterialOutputs().Num() > 0;
 }
 
+// BEGIN META SECTION - XR Soft Occlusions
+bool FMaterialResource::IsXRSoftOcclusionsEnabled() const
+{
+	return Material->bXRSoftOcclusions;
+}
+// END META SECTION - XR Soft Occlusions
+
 UMaterialInterface* FMaterialResource::GetMaterialInterface() const 
 { 
 	return MaterialInstance ? (UMaterialInterface*)MaterialInstance : (UMaterialInterface*)Material;

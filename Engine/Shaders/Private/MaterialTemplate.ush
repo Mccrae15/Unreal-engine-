@@ -396,6 +396,10 @@ struct FMaterialPixelParameters
 	uint InstanceId;
 #endif
 
+// BEGIN META SECTION - XR Soft Occlusions
+	uint ViewId;
+// END META SECTION - XR Soft Occlusions
+
 #if USES_PER_INSTANCE_CUSTOM_DATA && VF_USE_PRIMITIVE_SCENE_DATA
 	uint CustomDataOffset;
 	uint CustomDataCount;
@@ -751,6 +755,13 @@ float4 GetScreenPosition(FMaterialPixelParameters Parameters)
 {
 	return Parameters.ScreenPosition;
 }
+
+// BEGIN META SECTION - XR Soft Occlusions
+uint GetViewId(FMaterialPixelParameters Parameters)
+{
+	return Parameters.ViewId;
+}
+// END META SECTION - XR Soft Occlusions
 
 // Returns the pixel's depth, in world units. Works for both orthographic and perspective projections:
 float GetPixelDepth(FMaterialVertexParameters Parameters)

@@ -1942,6 +1942,9 @@ public:
 	virtual bool HasRuntimeVirtualTextureOutput() const { return false; }
 	virtual bool CastsRayTracedShadows() const { return true; }
 	virtual bool HasRenderTracePhysicalMaterialOutputs() const { return false; }
+	// BEGIN META SECTION - XR Soft Occlusions
+	virtual bool IsXRSoftOcclusionsEnabled() const { return false; }
+	// END META SECTION - XR Soft Occlusions
 	virtual EMaterialShadingRate GetShadingRate() const { return MSR_1x1; }
 	/**
 	 * Should shaders compiled for this material be saved to disk?
@@ -2641,6 +2644,9 @@ public:
 	ENGINE_API virtual bool HasRuntimeVirtualTextureOutput() const override;
 	ENGINE_API virtual bool CastsRayTracedShadows() const override;
 	ENGINE_API virtual bool HasRenderTracePhysicalMaterialOutputs() const override;
+	// BEGIN META SECTION - XR Soft Occlusions
+	ENGINE_API virtual bool IsXRSoftOcclusionsEnabled() const override;
+	// END META SECTION - XR Soft Occlusions
 	ENGINE_API virtual UMaterialInterface* GetMaterialInterface() const override;
 	/**
 	 * Should shaders compiled for this material be saved to disk?

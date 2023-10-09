@@ -118,6 +118,12 @@
 	#include "SingleLayerWaterShading.ush"
 #endif
 
+// BEGIN META SECTION - XR Soft Occlusions
+#if ENABLE_SOFT_OCCLUSIONS
+	#include "EnvironmentDepthOcclusion.ush"
+#endif
+// END META SECTION - XR Soft Occlusions
+
 // STRATA_TODO: Shared with BasePassPixelShader.usf
 #define MATERIAL_STRATA_OPAQUE_PRECOMPUTED_LIGHTING 0
 
@@ -337,6 +343,15 @@ void Main(
 	FMaterialPixelParameters MaterialParameters = GetMaterialPixelParameters(Interpolants, SvPosition);
 	FPixelMaterialInputs PixelMaterialInputs;
 	{
+// BEGIN META SECTION - XR Soft Occlusions
+#if USE_MULTI_VIEW_ID_SV
+		MaterialParameters.ViewId = MultiViewId;
+#elif USE_MULTI_VIEW_ID_INTERPOLANT
+		MaterialParameters.ViewId = BasePassInterpolants.MultiViewId;
+#else
+		MaterialParameters.ViewId = 0;
+#endif
+// END META SECTION - XR Soft Occlusions
 		float4 ScreenPosition = SvPositionToResolvedScreenPosition(SvPosition);
 		float3 WorldPosition = BasePassInterpolants.PixelPosition.xyz;
 		float3 WorldPositionExcludingWPO = BasePassInterpolants.PixelPosition.xyz;
@@ -981,6 +996,18 @@ void Main(
 	// clamp lit color to avoid overflows
 	OutColor.rgb = SafeGetOutColor(OutColor.rgb);
 #endif
+
+// BEGIN META SECTION - XR Soft Occlusions
+#if ENABLE_SOFT_OCCLUSIONS
+	uint ViewId = 0;
+#if USE_MULTI_VIEW_ID_SV
+	ViewId = MultiViewId;
+#elif USE_MULTI_VIEW_ID_INTERPOLANT
+	ViewId = BasePassInterpolants.MultiViewId;
+#endif
+	OutColor = EnvironmentDepthOcclusion(OutColor, SvPosition, ViewId);
+#endif
+// END META SECTION - XR Soft Occlusions
 
 #if USE_EDITOR_COMPOSITING && (MOBILE_EMULATION)
 	// Editor primitive depth testing

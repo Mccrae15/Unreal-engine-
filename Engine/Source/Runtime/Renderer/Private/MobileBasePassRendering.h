@@ -25,10 +25,18 @@
 #include "SkyAtmosphereRendering.h"
 #include "RenderUtils.h"
 #include "DebugViewModeRendering.h"
+// BEGIN META SECTION - XR Soft Occlusions
+#include "EnvironmentDepthRendering.h"
+// END META SECTION - XR Soft Occlusions
 
 struct FMobileBasePassTextures
 {
 	FRDGTextureRef ScreenSpaceAO = nullptr;
+	// BEGIN META SECTION - XR Soft Occlusions
+	FRDGTextureRef EnvironmentDepthTexture = nullptr;
+	FVector2f DepthFactors{ -1.0f, 1.0f };
+	FMatrix44f ScreenToDepthMatrices[2]{{},{}};
+	// END META SECTION - XR Soft Occlusions
 };
 
 BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FMobileBasePassUniformParameters, )
@@ -41,6 +49,9 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FMobileBasePassUniformParameters, )
 	SHADER_PARAMETER_STRUCT(FStrataMobileForwardPassUniformParameters, Strata)
 	SHADER_PARAMETER_STRUCT(FDebugViewModeUniformParameters, DebugViewMode)
 	SHADER_PARAMETER_STRUCT(FReflectionUniformParameters, ReflectionsParameters)
+	// BEGIN META SECTION - XR Soft Occlusions
+	SHADER_PARAMETER_STRUCT(FEnvironmentDepthUniformParameters, EnvironmentDepthParameters)
+	// END META SECTION - XR Soft Occlusions
 	SHADER_PARAMETER_TEXTURE(Texture2D, PreIntegratedGFTexture)
 	SHADER_PARAMETER_SAMPLER(SamplerState, PreIntegratedGFSampler)
 	SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, EyeAdaptationBuffer)
@@ -306,6 +317,9 @@ namespace MobileBasePass
 	bool GetShaders(
 		ELightMapPolicyType LightMapPolicyType,
 		bool bEnableLocalLights,
+		// BEGIN META SECTION - XR Soft Occlusions
+		bool bEnableXRSoftOcclusions,
+		// END META SECTION - XR Soft Occlusions
 		const FMaterial& MaterialResource,
 		FVertexFactoryType* VertexFactoryType,
 		bool bEnableSkyLight, 
@@ -333,7 +347,9 @@ inline bool UseSkylightPermutation(bool bEnableSkyLight, int32 MobileSkyLightPer
 	}
 }
 
-template< typename LightMapPolicyType, EOutputFormat OutputFormat, bool bEnableSkyLight, bool bEnableLocalLights>
+// BEGIN META SECTION - XR Soft Occlusions
+template< typename LightMapPolicyType, EOutputFormat OutputFormat, bool bEnableSkyLight, bool bEnableLocalLights, bool bEnableXRSoftOcclusions>
+// END META SECTION - XR Soft Occlusions
 class TMobileBasePassPS : public TMobileBasePassPSBaseType<LightMapPolicyType>
 {
 	DECLARE_SHADER_TYPE(TMobileBasePassPS,MeshMaterial);
@@ -343,7 +359,10 @@ public:
 	{		
 		// We compile the point light shader combinations based on the project settings
 		static auto* MobileSkyLightPermutationCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.SkyLightPermutation"));
+
 		const int32 MobileSkyLightPermutationOptions = MobileSkyLightPermutationCVar->GetValueOnAnyThread();
+		const bool bDeferredShading = IsMobileDeferredShadingEnabled(Parameters.Platform);
+		
 		const bool bIsLit = Parameters.MaterialParameters.ShadingModels.IsLit();
 		// Only compile skylight version for lit materials
 		const bool bShouldCacheBySkylight = !bEnableSkyLight || bIsLit;
@@ -352,6 +371,16 @@ public:
 		{
 			return false;
 		}
+
+		// BEGIN META SECTION - XR Soft Occlusions
+		static auto* MobileXRSoftOcclusionsPermutationCVar = IConsoleManager::Get().FindTConsoleVariableDataInt(TEXT("r.Mobile.XRSoftOcclusionsPermutation"));
+		const int32 MobileXRSoftOcclusionsPermutation = MobileXRSoftOcclusionsPermutationCVar->GetValueOnAnyThread();
+		if (bEnableXRSoftOcclusions && !MobileXRSoftOcclusionsPermutation)
+		{
+			return false;
+		}
+		// END META SECTION - XR Soft Occlusions
+
 		
 		const bool bDeferredShadingEnabled = IsMobileDeferredShadingEnabled(Parameters.Platform);
 		const bool bMaterialUsesForwardShading = bIsLit && 
@@ -382,6 +411,10 @@ public:
 
 		TMobileBasePassPSBaseType<LightMapPolicyType>::ModifyCompilationEnvironment(Parameters, OutEnvironment);
 		OutEnvironment.SetDefine(TEXT("ENABLE_SKY_LIGHT"), bEnableSkyLight);
+		// BEGIN META SECTION - XR Soft Occlusions
+		OutEnvironment.SetDefine(TEXT("ENABLE_SOFT_OCCLUSIONS"), bEnableXRSoftOcclusions ? 1u : 0u);
+		// END META SECTION - XR Soft Occlusions
+
 		OutEnvironment.SetDefine(TEXT("ENABLE_AMBIENT_OCCLUSION"), IsMobileAmbientOcclusionEnabled(Parameters.Platform) ? 1u : 0u);
 		
 		FForwardLightingParameters::ModifyCompilationEnvironment(Parameters.Platform, OutEnvironment);
